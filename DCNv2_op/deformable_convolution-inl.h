@@ -103,14 +103,21 @@ class DeformableConvolutionOp : public Operator {
     size_t expected = param_.no_bias ? 3 : 4;
     CHECK_EQ(in_data.size(), expected);
     CHECK_EQ(out_data.size(), 1U);
+
     LayerSetUp(in_data[conv::kData].shape_,
                in_data[conv::kOffset].shape_,
                out_data[conv::kOut].shape_);
+
     Stream<xpu>* s = ctx.get_stream<xpu>();
+
     // allocate workspace for col_buffer
+    // 包括col buffer 和 output
     Tensor<xpu, 1, DType> workspace = ctx.requested[conv::kTempSpace]
       .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_ + num_*output_dim_), s);
+
     // calculate the shape of col_buffer
+    // 多了第一维，设置为1
+    // col_buffer (input_c x kernel_h x kernel_w, 1, output_h, output_w)
     TShape col_buffer_shape(num_spatial_axes_ + 2);
     col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
     col_buffer_shape[1] = im2col_step_;
@@ -120,26 +127,40 @@ class DeformableConvolutionOp : public Operator {
     // create a column buffer using workspace and col_buffer_shape
     TBlob col_buffer(workspace.dptr_, col_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
 
+    // ouput_buffer (batch_size x ouput_c x output_h x output_w,)
     TShape output_buffer_shape(1);
     output_buffer_shape[0] = num_*output_dim_;
     TBlob output_buffer(workspace.dptr_ + col_buffer_size_, output_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
     
     // initialize weight and col_buffer 3D tensors for using gemm
+    // M = output_c
     index_t M = conv_out_channels_ / group_;
+    // N = output_h x output_w
     index_t N = im2col_step_ * conv_out_spatial_dim_;
+    // K = input_c x kernel_h x kernel_w
     index_t K = kernel_dim_;
+
+    // weight (1, output_c, input_c x kernel_h x kernel_w) , 除了维度，一模一样
     Tensor<xpu, 3, DType> weight_3d = in_data[conv::kWeight].get_with_shape<xpu, 3, DType>(
       Shape3(group_, M, K), s);
+
+    // col_buffer_3d (1, input_c x kernel_h x kernel_w, output_h x output_w)
     Tensor<xpu, 3, DType> col_buffer_3d = col_buffer.get_with_shape<xpu, 3, DType>(
       Shape3(group_, K, N), s);
+
+    // output_4d  (batch size, 1,  ouput_c, output_h x output_w)
     Tensor<xpu, 4, DType> output_4d = output_buffer.get_with_shape<xpu, 4, DType>(
       Shape4(num_ / im2col_step_, group_, M, N), s);
+
+    // 对每张图片
     for (index_t n = 0; n < num_ / im2col_step_; ++n) {
       // transform image to col_buffer in order to use gemm
       deformable_im2col(s, in_data[conv::kData].dptr<DType>() + n*im2col_step_*input_dim_,
         in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_, in_data[conv::kData].shape_,
         col_buffer.shape_, param_.kernel, param_.pad, param_.stride, param_.dilate,
         param_.num_deformable_group, col_buffer.dptr<DType>());
+
+      // 要写入的位置
       Tensor<xpu, 3, DType> output_3d = output_4d[n];
       for (index_t g = 0; g < group_; ++g) {
         // Legacy approach shown here for comparison:
@@ -148,8 +169,11 @@ class DeformableConvolutionOp : public Operator {
       }
     }
     
+    // 赋值到输出张量
+    // trans_output_4d (batch size, output_c, 1, output_h x output_c)
     Tensor<xpu, 4, DType> trans_output_4d = output_buffer.get_with_shape<xpu, 4, DType>(
       Shape4(num_ / im2col_step_, conv_out_channels_, im2col_step_, conv_out_spatial_dim_), s);
+    // original_output_4d (batch size, 1, output_c, output_h x output_c)
     Tensor<xpu, 4, DType> original_output_4d = out_data[conv::kOut].get_with_shape<xpu, 4, DType>(
       Shape4(num_ / im2col_step_, im2col_step_, conv_out_channels_, conv_out_spatial_dim_), s);
     original_output_4d = swapaxis<2, 1>(trans_output_4d);
@@ -184,6 +208,8 @@ class DeformableConvolutionOp : public Operator {
     // allocate workspace for col_buffer
     Tensor<xpu, 1, DType> workspace = ctx.requested[conv::kTempSpace]
       .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_ + num_*output_dim_), s);
+
+    // col_buffer (input_c x kernel_h x kernel_w, 1, output_h, output_w)
     // calculate the shape of col_buffer
     TShape col_buffer_shape(num_spatial_axes_ + 2);
     col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
@@ -194,28 +220,43 @@ class DeformableConvolutionOp : public Operator {
     // create a column buffer using workspace and col_buffer_shape
     TBlob col_buffer(workspace.dptr_, col_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
 
+    // ouput_buffer (batch_size x ouput_c x output_h x output_w,)
     TShape output_buffer_shape(1);
     output_buffer_shape[0] = num_*output_dim_;
     TBlob output_buffer(workspace.dptr_ + col_buffer_size_, output_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
     
+
+    // trans_output_4d (batch size, output_c, 1, output_h x output_c)
     Tensor<xpu, 4, DType> trans_output_4d = output_buffer.get_with_shape<xpu, 4, DType>(
       Shape4(num_ / im2col_step_, conv_out_channels_, im2col_step_, conv_out_spatial_dim_), s);
+
+    // original_output_4d (batch size, 1, output_c, output_h x output_c)
     Tensor<xpu, 4, DType> original_output_4d = out_grad[conv::kOut].get_with_shape<xpu, 4, DType>(
       Shape4(num_ / im2col_step_, im2col_step_, conv_out_channels_, conv_out_spatial_dim_), s);
     trans_output_4d = swapaxis<2, 1>(original_output_4d);
     
     // initialize weight and col_buffer 3D tensors for using gemm
     // For computing dLoss/d(in_data[kData])
+    // M = input_c x kernel_h x kernel_w
     index_t M = kernel_dim_;
+    // N = output_h x output_w
     index_t N = im2col_step_ * conv_out_spatial_dim_;
+    // K = output_c
     index_t K = conv_out_channels_ / group_;
+
+    // weight (1, output_c, input_c x kernel_h x kernel_w) , 除了维度，一模一样
     Tensor<xpu, 3, DType> weight_3d = in_data[conv::kWeight].get_with_shape<xpu, 3, DType>(
       Shape3(group_, K, M), s);
+
+    // out_grad_4d  (batch size, 1,  ouput_c, output_h x output_w)
     Tensor<xpu, 4, DType> out_grad_4d = output_buffer.get_with_shape<xpu, 4, DType>(
       Shape4(num_ / im2col_step_, group_, K, N), s);
+
+    // col_buffer_3d (1, input_c x kernel_h x kernel_w, output_h x output_w)
     Tensor<xpu, 3, DType> col_buffer_3d = col_buffer.get_with_shape<xpu, 3, DType>(
       Shape3(group_, M, N), s);
-    // For computing dLoss/dWeight
+
+    // dweight_3d (1, output_c, input_c x kernel_h x kernel_w) , 除了维度，一模一样
     Tensor<xpu, 3, DType> dweight_3d = in_grad[conv::kWeight].get_with_shape<xpu, 3, DType>(
       Shape3(group_, K, M), s);
 
@@ -223,8 +264,10 @@ class DeformableConvolutionOp : public Operator {
     if (req[conv::kData] == kWriteTo)
         data_grad = 0;
 
+    // 对每张图片
     for (index_t n = 0; n < num_ / im2col_step_; ++n) {
       Tensor<xpu, 3, DType> out_grad_3d = out_grad_4d[n];
+      // 计算col_buffer的梯度
       for (index_t g = 0; g < group_; ++g) {
         // Legacy approach shown here for comparison:
         //   col_buffer_3d[g] = dot(weight_3d[g].T(), out_grad_3d[g]);
@@ -232,6 +275,7 @@ class DeformableConvolutionOp : public Operator {
       }
 
       // gradient w.r.t. input coordinate data
+      // 计算offset的导数
       deformable_col2im_coord(s, col_buffer.dptr<DType>(),
         in_data[conv::kData].dptr<DType>() + n*im2col_step_*input_dim_,
         in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_,
@@ -241,6 +285,7 @@ class DeformableConvolutionOp : public Operator {
         req[conv::kOffset]);
 
       // gradient w.r.t. input data
+      // 计算input的导数
       deformable_col2im(s, col_buffer.dptr<DType>(),
         in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_,
         in_grad[conv::kData].shape_, col_buffer.shape_,
@@ -249,11 +294,13 @@ class DeformableConvolutionOp : public Operator {
         req[conv::kData]);
 
       // gradient w.r.t. weight, dWeight should accumulate across the batch and group
+      // 计算输入的col_buffer，用来计算weight的导数
       deformable_im2col(s, in_data[conv::kData].dptr<DType>() + n*im2col_step_*input_dim_,
         in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_, in_data[conv::kData].shape_,
         col_buffer.shape_, param_.kernel, param_.pad, param_.stride, param_.dilate,
         param_.num_deformable_group, col_buffer.dptr<DType>());
 
+      // 计算weight的导数
       for (index_t g = 0; g < group_; ++g) {
         auto request = (n == 0) ? req[conv::kWeight] : kAddTo;
         // Legacy approach shown here for comparison:
@@ -263,6 +310,7 @@ class DeformableConvolutionOp : public Operator {
     }
 
     // gradient w.r.t bias
+    // 计算bias的导数
     if (bias_term_) {
       Tensor<xpu, 1, DType> dbias = in_grad[conv::kBias].get<xpu, 1, DType>(s);
       Tensor<xpu, 3, DType> dout = out_grad[conv::kOut].get_with_shape<xpu, 3, DType>(
@@ -273,11 +321,19 @@ class DeformableConvolutionOp : public Operator {
 
  private:
   void LayerSetUp(const TShape& ishape, const TShape& offset_shape, const TShape& oshape) {
+    // NCHW
     channel_axis_ = 1;  // hard code channel axis
+
     const index_t first_spatial_axis = channel_axis_ + 1;
+
+    // 4
     const index_t num_axes = param_.kernel.ndim() + 2;
+
+    // 2
     num_spatial_axes_ = num_axes - first_spatial_axis;
+
     is_1x1_ = true;
+
     for (index_t i = 0; i < param_.kernel.ndim(); ++i) {
       is_1x1_ &= param_.kernel[i] == 1 && param_.stride[i] == 1 && param_.pad[i] == 0;
       if (!is_1x1_) break;
@@ -288,21 +344,39 @@ class DeformableConvolutionOp : public Operator {
     // number of input channels
     channels_ = ishape[1];
     group_ = param_.num_group;
+
+    // 输出通道个数
     conv_out_channels_ = param_.num_filter;
+    // 输入通道个数
     conv_in_channels_ = channels_;
+
     bias_term_ = !param_.no_bias;
+
+    // (input_c x kernel_h x kernel_w)
     kernel_dim_ = conv_in_channels_ / group_ * param_.kernel.Size();
+
+    // w的偏移量 output_c x input_c x kernel_h x kernel_w
     weight_offset_ = conv_out_channels_ * kernel_dim_ / group_;
+
+    // output_h x output_w
     conv_out_spatial_dim_ = oshape.ProdShape(2, oshape.ndim());
+
+    // col buffer偏移量
     col_offset_ = kernel_dim_ * conv_out_spatial_dim_;
+
+    // 一个图片的输出偏移量
     output_offset_ = conv_out_channels_ * conv_out_spatial_dim_ / group_;
     // size of the column buffer used for storing im2col-ed pixels
+    
+    // 假设为1，就和caffe2中一样了
     im2col_step_ = std::min(param_.im2col_step, num_);
     col_buffer_size_ = kernel_dim_ * group_ * im2col_step_ * conv_out_spatial_dim_;
+
     // input/output image size (#channels * height * width)
     input_dim_ = ishape.ProdShape(1, ishape.ndim());
     input_offset_dim_ = offset_shape.ProdShape(1, offset_shape.ndim());
     output_dim_ = oshape.ProdShape(1, oshape.ndim());
+
     num_kernels_im2col_ = conv_in_channels_ * conv_out_spatial_dim_;
     num_kernels_col2im_ = input_dim_;
   }
