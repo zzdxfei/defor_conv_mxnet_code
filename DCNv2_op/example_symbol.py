@@ -38,11 +38,14 @@ def modulated_deformable_roi_pool(data, rois, spatial_scale, imfeat_dim=256, def
     feat_deform = mx.symbol.FullyConnected(name='fc_deform_2', data=feat_deform, num_hidden=deform_fc_dim)
     feat_deform = mx.sym.Activation(data=feat_deform, act_type='relu', name='fc_deform_2_relu')
     
+    # 7 x 7 x 3
     feat_deform = mx.symbol.FullyConnected(name='fc_deform_3', data=feat_deform, num_hidden=roi_size * roi_size * 3)
     
+    # offset (batchsize, 2, 7, 7)
     roi_offset = mx.sym.slice_axis(feat_deform, axis=1, begin=0, end=roi_size * roi_size * 2)
     roi_offset = mx.sym.reshape(roi_offset, shape=(-1, 2, roi_size, roi_size))
 
+    # mask (batchsize, 1, 7, 7)
     roi_mask = mx.sym.slice_axis(feat_deform, axis=1, begin=roi_size * roi_size * 2, end=None)
     roi_mask_sigmoid = mx.sym.Activation(roi_mask, act_type='sigmoid')
     roi_mask_sigmoid = mx.sym.reshape(roi_mask_sigmoid, shape=(-1, 1, roi_size, roi_size))

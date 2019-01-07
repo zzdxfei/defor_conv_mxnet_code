@@ -67,6 +67,7 @@ namespace mshadow {
       const int channels_each_class,
       DType* top_data,
       DType* top_count) {
+      // TODO(zzdxfei)
       CUDA_KERNEL_LOOP(index, count) {
         // The output is in order (n, ctop, ph, pw)
         int pw = index % pooled_width;
@@ -96,6 +97,7 @@ namespace mshadow {
         int part_h = floor(static_cast<DType>(ph) / pooled_height*part_size);
         int part_w = floor(static_cast<DType>(pw) / pooled_width*part_size);
         int class_id = ctop / channels_each_class;
+
         DType trans_x = no_trans ? static_cast<DType>(0) :
           bottom_trans[(((n * num_classes + class_id) * 2) * part_size + part_h)*part_size + part_w] * trans_std;
         DType trans_y = no_trans ? static_cast<DType>(0) :
@@ -149,24 +151,30 @@ namespace mshadow {
       const int group_size,
       const int pooled_size,
       const int part_size,
-      const int sample_per_part,
-      const float trans_std) {
+      const int sample_per_part,  // 2
+      const float trans_std) {  // 0.1
       // LOG(INFO) << "DeformablePSROIPoolForward";
+
       const DType *bottom_data = data.dptr_;
       const DType *bottom_rois = bbox.dptr_;
       const DType *bottom_trans = no_trans ? NULL : trans.dptr_;
+
       DType *top_data = out.dptr_;
       DType *top_count_data = top_count.dptr_;
+
+      //
       const int count = out.shape_.Size();
       const int channels = data.size(1);
       const int height = data.size(2);
       const int width = data.size(3);
       const int pooled_height = pooled_size;
       const int pooled_width = pooled_size;
-      const int num_classes = no_trans ? 1 : trans.size(1) / 2;
+      const int num_classes = no_trans ? 1 : trans.size(1) / 2;  
+      // 每个class占用的通道数
       const int channels_each_class = no_trans ? output_dim : output_dim / num_classes;
 
       cudaStream_t stream = Stream<gpu>::GetStream(out.stream_);
+
       DeformablePSROIPoolForwardKernel<DType> << <mxnet::op::mxnet_op::cuda_get_num_blocks(count),
         kBaseThreadNum, 0, stream >> >(
         count, bottom_data, spatial_scale, channels, height, width, pooled_height, pooled_width,
@@ -347,18 +355,18 @@ namespace mshadow {
 
   template<typename DType>
   inline void DeformablePSROIPoolForward(const Tensor<gpu, 4, DType> &out,
-    const Tensor<gpu, 4, DType> &data,
-    const Tensor<gpu, 2, DType> &bbox,
-    const Tensor<gpu, 4, DType> &trans,
-    const Tensor<gpu, 4, DType> &top_count,
+    const Tensor<gpu, 4, DType> &data,  // ?
+    const Tensor<gpu, 2, DType> &bbox,  // (batch, 5)
+    const Tensor<gpu, 4, DType> &trans,  // offset (batch, 2, 7, 7)
+    const Tensor<gpu, 4, DType> &top_count,  // ?
     const bool no_trans,
-    const float spatial_scale,
-    const int output_dim,
-    const int group_size,
-    const int pooled_size,
-    const int part_size,
-    const int sample_per_part,
-    const float trans_std) {
+    const float spatial_scale,  // 0.25
+    const int output_dim,  // 256
+    const int group_size,  // 1
+    const int pooled_size,  // 7
+    const int part_size,  // 7
+    const int sample_per_part,  // 2
+    const float trans_std) {  // 0.1
     cuda::DeformablePSROIPoolForward(out, data, bbox, trans, top_count, no_trans, spatial_scale,
       output_dim, group_size, pooled_size, part_size, sample_per_part, trans_std);
   }

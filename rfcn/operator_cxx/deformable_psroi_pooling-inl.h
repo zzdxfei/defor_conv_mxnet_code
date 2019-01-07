@@ -71,18 +71,22 @@ namespace mxnet {
         size_t out_expected = 2;
         CHECK_EQ(in_data.size(), in_expected);
         CHECK_EQ(out_data.size(), out_expected);
+
         CHECK_EQ(out_data[deformablepsroipool::kOut].shape_[0], in_data[deformablepsroipool::kBox].shape_[0]);
         CHECK_EQ(out_data[deformablepsroipool::kTopCount].shape_[0], in_data[deformablepsroipool::kBox].shape_[0]);
+
         Stream<xpu> *s = ctx.get_stream<xpu>();
 
         Tensor<xpu, 4, DType> data = in_data[deformablepsroipool::kData].get<xpu, 4, DType>(s);
         Tensor<xpu, 2, DType> bbox = in_data[deformablepsroipool::kBox].get<xpu, 2, DType>(s);
         Tensor<xpu, 4, DType> out = out_data[deformablepsroipool::kOut].get<xpu, 4, DType>(s);
         Tensor<xpu, 4, DType> top_count = out_data[deformablepsroipool::kTopCount].get<xpu, 4, DType>(s);
+
         CHECK_EQ(data.CheckContiguous(), true);
         CHECK_EQ(bbox.CheckContiguous(), true);
         CHECK_EQ(out.CheckContiguous(), true);
         CHECK_EQ(top_count.CheckContiguous(), true);
+
         out = -FLT_MAX;
         top_count = 0.0f;
 
