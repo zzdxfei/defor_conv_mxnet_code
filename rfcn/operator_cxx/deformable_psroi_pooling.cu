@@ -63,46 +63,54 @@ namespace mshadow {
       const int output_dim,
       const int group_size,
       const int part_size,
-      const int num_classes,
+      const int num_classes,  // 1
       const int channels_each_class,
       DType* top_data,
       DType* top_count) {
-      // TODO(zzdxfei)
+      // 线程的个数等于输出特征张量的个数
       CUDA_KERNEL_LOOP(index, count) {
+
         // The output is in order (n, ctop, ph, pw)
         int pw = index % pooled_width;
         int ph = (index / pooled_width) % pooled_height;
         int ctop = (index / pooled_width / pooled_height) % output_dim;
         int n = index / pooled_width / pooled_height / output_dim;
 
+        // 提取对应的rois信息
         // [start, end) interval for spatial sampling
         const DType* offset_bottom_rois = bottom_rois + n * 5;
-        int roi_batch_ind = offset_bottom_rois[0];
+        int roi_batch_ind = offset_bottom_rois[0];  // roi在哪个batch
         DType roi_start_w = static_cast<DType>(round(offset_bottom_rois[1])) * spatial_scale - 0.5;
         DType roi_start_h = static_cast<DType>(round(offset_bottom_rois[2])) * spatial_scale - 0.5;
         DType roi_end_w = static_cast<DType>(round(offset_bottom_rois[3]) + 1.) * spatial_scale - 0.5;
         DType roi_end_h = static_cast<DType>(round(offset_bottom_rois[4]) + 1.) * spatial_scale - 0.5;
 
+        // 计算roi的宽度和高度
         // Force too small ROIs to be 1x1
         DType roi_width = max(roi_end_w - roi_start_w, 0.1); //avoid 0
         DType roi_height = max(roi_end_h - roi_start_h, 0.1);
 
+        // 一个bin的高度和宽度
         // Compute w and h at bottom
         DType bin_size_h = roi_height / static_cast<DType>(pooled_height);
         DType bin_size_w = roi_width / static_cast<DType>(pooled_width);
 
+        // 对每个bin划分sub bin
         DType sub_bin_size_h = bin_size_h / static_cast<DType>(sample_per_part);
         DType sub_bin_size_w = bin_size_w / static_cast<DType>(sample_per_part);
 
+        // 默认pooled_height == part_size
         int part_h = floor(static_cast<DType>(ph) / pooled_height*part_size);
         int part_w = floor(static_cast<DType>(pw) / pooled_width*part_size);
-        int class_id = ctop / channels_each_class;
+        int class_id = ctop / channels_each_class;  // 默认为0
 
+        // 偏移量
         DType trans_x = no_trans ? static_cast<DType>(0) :
           bottom_trans[(((n * num_classes + class_id) * 2) * part_size + part_h)*part_size + part_w] * trans_std;
         DType trans_y = no_trans ? static_cast<DType>(0) :
           bottom_trans[(((n * num_classes + class_id) * 2 + 1) * part_size + part_h)*part_size + part_w] * trans_std;
         
+        // 对应的采样区域的左上角位置
         DType wstart = static_cast<DType>(pw)* bin_size_w
           + roi_start_w;
         wstart += trans_x * roi_width;
@@ -112,14 +120,21 @@ namespace mshadow {
         
         DType sum = 0;
         int count = 0;
+
+        // group_size == 1
+        // 计算一个比例，方便在特征图上取位置
         int gw = floor(static_cast<DType>(pw) * group_size / pooled_width);
         int gh = floor(static_cast<DType>(ph)* group_size / pooled_height);
-        gw = min(max(gw, 0), group_size - 1);
-        gh = min(max(gh, 0), group_size - 1);
+        gw = min(max(gw, 0), group_size - 1);  // 0
+        gh = min(max(gh, 0), group_size - 1);  // 0
 
+        // 所在batch开始位置
         const DType* offset_bottom_data = bottom_data + (roi_batch_ind * channels) * height * width;
+
+        // 采样4个点
         for (int ih = 0; ih < sample_per_part; ih++) {
           for (int iw = 0; iw < sample_per_part; iw++) {
+
             DType w = wstart + iw*sub_bin_size_w;
             DType h = hstart + ih*sub_bin_size_h;
             // bilinear interpolation
@@ -128,6 +143,8 @@ namespace mshadow {
             }
             w = min(max(w, 0.), width - 1.);
             h = min(max(h, 0.), height - 1.);
+
+            // group_size == 1
             int c = (ctop*group_size + gh)*group_size + gw;
             DType val = bilinear_interp(offset_bottom_data + c*height*width, w, h, width, height);
             sum += val;
@@ -169,9 +186,11 @@ namespace mshadow {
       const int width = data.size(3);
       const int pooled_height = pooled_size;
       const int pooled_width = pooled_size;
-      const int num_classes = no_trans ? 1 : trans.size(1) / 2;  
+
+      const int num_classes = no_trans ? 1 : trans.size(1) / 2;  // 1
+
       // 每个class占用的通道数
-      const int channels_each_class = no_trans ? output_dim : output_dim / num_classes;
+      const int channels_each_class = no_trans ? output_dim : output_dim / num_classes;  // output_dim
 
       cudaStream_t stream = Stream<gpu>::GetStream(out.stream_);
 
@@ -240,6 +259,7 @@ namespace mshadow {
         DType trans_y = no_trans ? static_cast<DType>(0) :
           bottom_trans[(((n * num_classes + class_id) * 2 + 1) * part_size + part_h)*part_size + part_w] * trans_std;
 
+        // 左上角位置
         DType wstart = static_cast<DType>(pw)* bin_size_w
           + roi_start_w;
         wstart += trans_x * roi_width;
